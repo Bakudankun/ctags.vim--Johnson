@@ -130,7 +130,7 @@ autocmd BufEnter *.c,*.cpp,*.h,*.py,*.vim
 \ |     set laststatus=2
 \ | endif
 \ | if generate_tags != 0
-\      && !exists('b:lines')
+\      && !exists('b:tags')
 \      && filereadable(expand("<afile>"))
 \ | call GenerateTags()
 \ | endif
@@ -155,150 +155,44 @@ autocmd CursorHold *
 \ |     call s:SetTagDisplay()
 \ | endif
 
-"set titlestring=%t%(\ %M%)%(\ (%{expand(\"%:~:.:h\")})%)%(\ %a%)%=%(tag:\ %-{GetTagName(line("."))}%)
-
-
-
-"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-" No changes should be required below (unless there are bugs).
-"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-
-if version < 600
-    function! Stridx(haysack, needle)
-	return match(a:haysack, a:needle)
-    endfunction
-else
-    function! Stridx(haysack, needle)
-	return stridx(a:haysack, a:needle)
-    endfunction
-endif
 
 let g:ctags_obligatory_args = '-n --sort=no -o -'
 let g:ctags_pattern="^\\(.\\{-}\\)\t.\\{-}\t\\(\\d*\\).*"
 
-" This function builds an array of tag indices.  b:tags contains all
-" the tag names in the file, separated by newlines.  b:lines contains
-" the source file line numbers of lines that contain a tag, followed
-" by the index into b:tags of the name of the tag.  The b:lines array
-" is sorted, so a binary search can be used to find the appropriate
-" tagged line for a given source file line number.  b:length contains
-" the length of a number (line number or index) in b:lines.
-"
-" There are two versions of this function: if vim has been compiled
-" with perl support, a fast perl version is used; otherwise a native
-" version that is somewhat slower is used.
-"
-if has('perl')
-    function! GenerateTags()
-	perl << PERL_EOF
-	$max_num = "9999999";
-	$length = length($max_num);
-	$lines = "";
-	$tags = "";
-	$index = 0;
 
-	$command = VIM::Eval("g:ctags_path");
-	$command .= " " . VIM::Eval("g:ctags_args");
-	$command .= " " . VIM::Eval("g:ctags_obligatory_args");
-	$command .= " " . VIM::Eval("expand('%')");
+function! GenerateTags()
+    let b = getbufvar('%', '')
 
-	open (CTAGS, $command . "|") or die $!;
+    let b.tags = []
 
-	while (<CTAGS>)
-	{
-	    s/^(.+?)\t.*?\t(\d*);.*$/\1\t\2/;
-	    my ($tag_name, $tag_line_num) = split /\t/;
-	    $tags .= $tag_name . "\n";
-	    $lines .= sprintf("%-*d", $length, $tag_line_num);
-	    $lines .= sprintf("%-*d", $length, $index);
-	    $index += length($tag_name) + 1;
-	}
-
-	close (CTAGS);
-
-	$lines .= $max_num;
-	$lines .= $max_num;
-
-	VIM::DoCommand("let b:tags = '$tags'");
-	VIM::DoCommand("let b:length = $length");
-	VIM::DoCommand("let b:lines = '$lines'");
-PERL_EOF
+    function! s:parse_tags(channel, msg) closure
+	let tag_name = substitute(a:msg, g:ctags_pattern, '\1', '')
+	let tag_line_num = substitute(a:msg, g:ctags_pattern, '\2', '')
+	call add(b.tags, {'line': str2nr(tag_line_num), 'tag': tag_name})
     endfunction
-else
-    function! GenerateTags()
-	let ctags = system(g:ctags_path.' '.g:ctags_args.' '.g:ctags_obligatory_args.' "'.expand('%').'"')
 
-	let max_num = "9999999"
-	let b:length = strlen(max_num)
-	let b:lines = ''
-	let b:tags = ''
-
-	" strlen(spaces) must be at least b:length.
-	let spaces = '               '
-	let len = strlen(ctags)
-	let index = 0
-	let offset = 0
-
-	while offset < len
-	    let one_tag = matchstr(ctags, "[^\n]*", offset)
-	    let tag_name = substitute(one_tag, g:ctags_pattern, '\1', '')
-	    let tag_line_num = substitute(one_tag, g:ctags_pattern, '\2', '')
-	    let b:lines = b:lines . strpart(tag_line_num.spaces, 0, b:length)
-	    let b:lines = b:lines . strpart(index.spaces, 0, b:length)
-	    let b:tags = b:tags . tag_name . "\n"
-	    let index = index + strlen(tag_name) + 1
-	    let offset = offset + strlen(one_tag) + 1
-	endwhile
-
-	let b:lines = b:lines . max_num
-	let b:lines = b:lines . max_num
-    endfunction
-endif
-
-" This function returns the tag name for given index.
-function! GetLine(i)
-    return strpart(b:lines, a:i*b:length*2, b:length)+0
-endfunction
-
-function! GetIndex(i)
-    return strpart(b:lines, a:i*(b:length*2)+b:length, b:length)+0
+    call job_start(g:ctags_path . ' ' . g:ctags_args . ' ' . g:ctags_obligatory_args . ' "' . expand('%') . '"', {
+    \   'out_cb': funcref('s:parse_tags'),
+    \   'close_cb': {ch -> sort(b.tags, {lhs, rhs -> lhs.line - rhs.line})},
+    \ })
 endfunction
 
 " This function does binary search in the array of tag names and returns
 " corresponding tag.
 function! GetTagName(curline)
-    if !exists("b:lines")
+    if !exists("b:tags")
 	return ""
     endif
 
-    let left = 0
-    let right = strlen(b:lines)/(b:length*2)
+    let ret = ""
 
-    if a:curline < GetLine(left)
-	return ""
-    endif
-
-    while left<right
-	let middle = (right+left+1)/2
-	let middleline = GetLine(middle)
-
-	if middleline == a:curline
-	    let left = middle
+    for tag in b:tags
+	if a:curline < tag.line
 	    break
 	endif
 
-	if middleline > a:curline
-	    let right = middle-1
-	else
-	    let left = middle
-	endif
-    endwhile
-
-    let index = GetIndex(left)
-
-    if index < strlen(b:tags)
-	let ret = matchstr(b:tags, "[^\n]*", index)
-    endif
+	let ret = tag.tag
+    endfor
 
     return ret
 endfunction
