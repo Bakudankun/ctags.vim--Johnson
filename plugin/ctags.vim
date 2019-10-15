@@ -148,8 +148,6 @@ autocmd BufWritePost *.c,*.cpp,*.h,*.py,*.vim
 \ |     call GenerateTags()
 \ | endif
 
-set updatetime=500
-
 autocmd CursorHold *
 \   if generate_tags != 0
 \ |     call s:SetTagDisplay()
